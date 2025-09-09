@@ -1,178 +1,137 @@
-# app.py — Dark Themed Premium Unit Converter (with conditional downloads)
-import os
-import pandas as pd
-from datetime import datetime
-import matplotlib.pyplot as plt
 import gradio as gr
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+from datetime import datetime
 
-# ========== Units ==========
-UNITS = {
-    "Length": {
-        "meter (m)": 1.0,
-        "centimeter (cm)": 0.01,
-        "kilometer (km)": 1000.0,
-        "inch (in)": 0.0254,
-        "foot (ft)": 0.3048,
-        "yard (yd)": 0.9144,
-        "mile (mi)": 1609.344
-    },
-    "Mass": {
-        "kilogram (kg)": 1.0,
-        "gram (g)": 0.001,
-        "milligram (mg)": 1e-6,
-        "pound (lb)": 0.45359237,
-        "ounce (oz)": 0.028349523125
-    },
-    "Volume": {
-        "liter (L)": 1.0,
-        "milliliter (mL)": 0.001,
-        "gallon (US)": 3.785411784,
-        "cup (US)": 0.2365882365,
-        "fluid ounce (US)": 0.0295735295625
-    },
-    "Temperature": {
-        "Celsius (°C)": "C",
-        "Fahrenheit (°F)": "F",
-        "Kelvin (K)": "K"
-    }
+# --- Conversion dictionaries ---
+length_units = {
+    "meter": 1, "centimeter": 100, "kilometer": 0.001,
+    "inch": 39.3701, "foot": 3.28084, "yard": 1.09361, "mile": 0.000621371
 }
 
-# ========== Conversion ==========
-def _fmt(x, d=6):
+mass_units = {
+    "kilogram": 1, "gram": 1000, "milligram": 1e6,
+    "pound": 2.20462, "ounce": 35.274
+}
+
+volume_units = {
+    "liter": 1, "milliliter": 1000,
+    "gallon (US)": 0.264172, "cup (US)": 4.22675, "fluid ounce (US)": 33.814
+}
+
+temperature_units = ["Celsius", "Fahrenheit", "Kelvin"]
+
+# --- History store ---
+history = []
+
+# --- Conversion function ---
+def convert(category, from_unit, to_unit, value):
     try:
-        v = float(x)
+        value = float(value)
     except:
-        return str(x)
-    s = f"{v:.{d}f}".rstrip("0").rstrip(".")
-    return "0" if s in ("", "-0") else s
+        return "⚠️ Please enter a numeric value."
+    
+    result = None
+    if category == "Length":
+        result = value / length_units[from_unit] * length_units[to_unit]
+    elif category == "Mass":
+        result = value / mass_units[from_unit] * mass_units[to_unit]
+    elif category == "Volume":
+        result = value / volume_units[from_unit] * volume_units[to_unit]
+    elif category == "Temperature":
+        if from_unit == "Celsius":
+            if to_unit == "Fahrenheit":
+                result = (value * 9/5) + 32
+            elif to_unit == "Kelvin":
+                result = value + 273.15
+            else:
+                result = value
+        elif from_unit == "Fahrenheit":
+            if to_unit == "Celsius":
+                result = (value - 32) * 5/9
+            elif to_unit == "Kelvin":
+                result = (value - 32) * 5/9 + 273.15
+            else:
+                result = value
+        elif from_unit == "Kelvin":
+            if to_unit == "Celsius":
+                result = value - 273.15
+            elif to_unit == "Fahrenheit":
+                result = (value - 273.15) * 9/5 + 32
+            else:
+                result = value
 
-def convert_temp(val, fu, tu):
-    v = float(val)
-    fc, tc = UNITS["Temperature"][fu], UNITS["Temperature"][tu]
-    if fc == tc:
-        return _fmt(v)
+    # Save history
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    history.append([timestamp, category, f"{value} {from_unit} → {to_unit}", f"{result:.4f} {to_unit}"])
+    return f"{result:.4f} {to_unit}"
 
-    def to_c(x, c):
-        return x if c == "C" else (x - 32) * 5/9 if c == "F" else x - 273.15
+# --- Helper for updating unit choices ---
+def update_units(category):
+    if category == "Length":
+        return gr.update(choices=list(length_units.keys()), value="meter"), gr.update(choices=list(length_units.keys()), value="centimeter")
+    elif category == "Mass":
+        return gr.update(choices=list(mass_units.keys()), value="kilogram"), gr.update(choices=list(mass_units.keys()), value="gram")
+    elif category == "Volume":
+        return gr.update(choices=list(volume_units.keys()), value="liter"), gr.update(choices=list(volume_units.keys()), value="milliliter")
+    elif category == "Temperature":
+        return gr.update(choices=temperature_units, value="Celsius"), gr.update(choices=temperature_units, value="Fahrenheit")
 
-    def from_c(c, c2):
-        return c if c2 == "C" else c * 9/5 + 32 if c2 == "F" else c + 273.15
-
-    return _fmt(from_c(to_c(v, fc), tc))
-
-def convert_val(cat, val, fu, tu):
-    try:
-        v = float(val)
-    except:
-        return "❗ Enter a number"
-    if fu == tu:
-        return _fmt(v)
-    if cat == "Temperature":
-        return convert_temp(v, fu, tu)
-    f1, f2 = UNITS[cat].get(fu), UNITS[cat].get(tu)
-    if not f1 or not f2:
-        return "❗ Invalid units"
-    return _fmt(v * f1 / f2)
-
-# ========== History ==========
-HISTORY, MAXH = [], 30
-def add_hist(cat, val, fu, tu, res):
-    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-    HISTORY.append([ts, cat, f"{val} {fu}", f"{res} {tu}"])
-    if len(HISTORY) > MAXH:
-        HISTORY.pop(0)
-
-def get_hist():
-    if not HISTORY:
-        return []
-    return pd.DataFrame(HISTORY[::-1], columns=["Time","Category","From","Result"])
-
-# ========== CSV + Image ==========
+# --- Generate CSV + Image ---
 def gen_files():
-    if not HISTORY:
-        return "⚠️ No history", None, None
-    df = get_hist()
+    if not history:
+        return "⚠️ No history yet.", None, None
+    df = pd.DataFrame(history, columns=["Time","Category","From→To","Result"])
     csv_path = "history.csv"
     img_path = "history.png"
     df.to_csv(csv_path, index=False)
 
-    # Generate table image
-    fig, ax = plt.subplots(figsize=(8, 3))
-    ax.axis("off")
-    tbl = ax.table(cellText=df.values, colLabels=df.columns, loc="center")
-    tbl.auto_set_font_size(False)
-    tbl.set_fontsize(8)
-    tbl.scale(1.2, 1.2)
-    plt.savefig(img_path, bbox_inches="tight", dpi=150)
-    plt.close(fig)
+    plt.figure(figsize=(8,2))
+    plt.axis("off")
+    plt.table(cellText=df.values, colLabels=df.columns, cellLoc="center", loc="center")
+    plt.savefig(img_path, bbox_inches="tight")
+    plt.close()
+    return "✅ Files ready!", csv_path, img_path
 
-    return f"✅ Files ready ({len(df)} rows)", csv_path, img_path
+# --- Build UI ---
+with gr.Blocks(css="""
+body {background-color: #121212; color: #E0E0E0;}
+.card {background-color:#1E1E1E; border-radius:12px; padding:16px;}
+button {background-color:#1976D2 !important; color:white !important;}
+""") as app:
+    gr.Markdown("## 🌐 Unit Converter (Dark Mode)")
 
-# ========== Dark CSS ==========
-CSS = """
-body { background-color: #0f172a; color: #e5e7eb; }
-.gradio-container { font-family: 'Inter', sans-serif; }
-.card { background: #1e293b; border-radius: 12px; padding: 16px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
-h1,h2,h3 { color: #10b981; }
-.gr-button { border-radius:8px; padding:10px 14px; font-weight:600; }
-#convert { background: #3b82f6; color: white; border:none; }
-#swap { background: #10b981; color:white; border:none; }
-#csv { background: #10b981; color:white; border:none; }
-.gr-textbox textarea { font-size:18px; color: #e5e7eb; background:#0f172a; }
-"""
+    with gr.Row():
+        with gr.Column(scale=1, elem_classes="card"):
+            category = gr.Dropdown(["Length","Mass","Volume","Temperature"], label="Category", value="Length")
+            from_unit = gr.Dropdown(list(length_units.keys()), label="From Unit", value="meter")
+            to_unit = gr.Dropdown(list(length_units.keys()), label="To Unit", value="centimeter")
+            value = gr.Number(label="Value", value=1)
+            convert_btn = gr.Button("Convert")
+        with gr.Column(scale=1, elem_classes="card"):
+            result = gr.Textbox(label="Result", interactive=False)
+    
+    # History
+    hist = gr.Dataframe(headers=["Time","Category","From→To","Result"], label="History", interactive=False, wrap=True)
 
-# ========== Gradio UI ==========
-with gr.Blocks(css=CSS, title="Dark Unit Converter") as app:
-    gr.Markdown("## 🌙 Premium Dark Unit Converter", elem_classes="card")
-
-    # Input + Result
-    with gr.Column(scale=2, elem_classes="card"):
-        category = gr.Dropdown(list(UNITS.keys()), label="Category", value="Length")
-        f_unit = gr.Dropdown(list(UNITS["Length"].keys()), label="From", value="meter (m)")
-        t_unit = gr.Dropdown(list(UNITS["Length"].keys()), label="To", value="centimeter (cm)")
-        value = gr.Number(label="Value", value=1)
-        with gr.Row():
-            btn_convert = gr.Button("Convert", elem_id="convert")
-            btn_swap = gr.Button("Swap", elem_id="swap")
-        result = gr.Textbox(label="Result", interactive=False)
-
-    # History directly under result
-    with gr.Column(elem_classes="card"):
-        hist = gr.Dataframe(
-            value=get_hist(),
-            headers=["Time","Category","From","Result"],
-            label="History",
-            interactive=False,
-            row_count=10
-        )
-
-    # Downloads (hidden until generated)
+    # Downloads
     with gr.Row():
         with gr.Column(elem_classes="card"):
             btn_csv = gr.Button("Generate CSV + Image", elem_id="csv")
             status = gr.Textbox(label="Status", interactive=False)
-            file_csv = gr.DownloadButton(label="⬇️ Download CSV", visible=False)
-            file_img = gr.DownloadButton(label="⬇️ Download Image", visible=False)
+            file_csv = gr.File(label="Download CSV", visible=False)
+            file_img = gr.File(label="Download Image", visible=False)
 
-    # Logic
-    def update_units(cat):
-        opts = list(UNITS[cat].keys())
-        return (
-            gr.update(choices=opts, value=opts[0]),
-            gr.update(choices=opts, value=opts[1] if len(opts) > 1 else opts[0])
-        )
-    category.change(update_units, category, [f_unit, t_unit])
+    # --- Logic ---
+    category.change(update_units, category, [from_unit, to_unit])
+    convert_btn.click(convert, [category, from_unit, to_unit, value], result)
 
-    def do_convert(c, v, fu, tu):
-        res = convert_val(c, v, fu, tu)
-        if res.startswith("❗"):
-            return res, get_hist()
-        add_hist(c, v, fu, tu, res)
-        return f"{res} {tu}", get_hist()
-    btn_convert.click(do_convert, [category, value, f_unit, t_unit], [result, hist])
-
-    btn_swap.click(lambda fu, tu: (tu, fu), [f_unit, t_unit], [f_unit, t_unit])
+    def update_history():
+        if history:
+            return pd.DataFrame(history, columns=["Time","Category","From→To","Result"])
+        return pd.DataFrame(columns=["Time","Category","From→To","Result"])
+    convert_btn.click(update_history, None, hist)
 
     def do_files():
         msg, csv, img = gen_files()
@@ -180,8 +139,8 @@ with gr.Blocks(css=CSS, title="Dark Unit Converter") as app:
             return msg, gr.update(value=csv, visible=True), gr.update(value=img, visible=True)
         else:
             return "⚠️ No history to export", gr.update(visible=False), gr.update(visible=False)
-
     btn_csv.click(do_files, None, [status, file_csv, file_img])
 
+# ✅ Entry point for Hugging Face / local run
 if __name__ == "__main__":
     app.launch()
